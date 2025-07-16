@@ -1,2 +1,3 @@
 /arxiv_kaggle
 .env
+__pycache__/
