@@ -1,7 +1,10 @@
+import os
 import torch
 import numpy as np
-from sklearn.cluster import KMeans
 from torch import pca_lowrank
+from sklearn.cluster import KMeans
+
+import torch.nn as nn
 
 DEFAULT_KMEANS_KWARGS = {
     "init": "k-means++",
@@ -19,7 +22,7 @@ class HAPT(KMeans):
 
     Hierarchical K-means tree, with a unique PCA projection on each graph edge
     """
-    def __init__(self, n_clusters, is_leaf, parent, points):
+    def __init__(self, n_clusters, is_leaf, parent, points, base_dir=None):
         """
         n_clusters  : k
         is_leaf     : denotes if tree is leaf node
@@ -31,6 +34,7 @@ class HAPT(KMeans):
         self.n_clusters:int      = n_clusters
         self.points:np.ndarray   = points
         self.centroid:np.ndarray = self.points.mean(axis=0)
+        self.base_dir:str        = base_dir
 
         self.cumulated_projection:np.ndarray = None
         self.projection:np.ndarray           = None
@@ -96,3 +100,59 @@ class HAPT(KMeans):
         # Recurse
         for i in range(self.n_clusters):
             self.branches[i].get_projections(sizes[1:])
+
+    def save_vectors(self, base_dir=None):
+        if base_dir is None:
+            base_dir = self.base_dir
+        if base_dir is None:
+            print("Please provide a directory")
+            return
+        
+        points_use = self.points @ self.cumulated_projection
+
+        np.save(os.path.join(base_dir, "points.npy"), points_use)
+        try:
+            np.save(os.path.join(base_dir, "centroids.npy"), self.cluster_centers_)
+        except AttributeError:
+            return
+
+        for i in range(self.n_clusters):
+            _dir = os.path.join(base_dir, f"{i}")
+            if not os.path.exists(_dir):
+                os.mkdir(_dir)
+            self.branches[i].save_vectors(_dir)
+
+    def save_compressed(self, data, file_path):
+        points_use = self.points @ self.cumulated_projection
+
+        data["points"] = points_use
+        try:
+            data["centroids"] = self.cluster_centers_
+        except AttributeError:
+            return 
+        
+        for i in range(self.n_clusters):
+            data[i] = {}
+            self.branches[i].save_compressed(data[i], file_path)
+
+        if self.parent is None:
+            np.savez_compressed(file_path, data=data, allow_pickle=True)
+
+class HAPTPredictor(nn.Module):
+    def __init__(self, input_dim, output_dim, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        middle_dim = int(np.sqrt(input_dim * output_dim))
+        middle_dim = max(middle_dim, 64)
+
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+
+        self.lin1 = nn.Linear(input_dim, middle_dim)
+        self.lin2 = nn.Linear(middle_dim, output_dim)
+
+    def forward(self, x):
+        x = nn.GELU(self.lin1(x))
+        return self.lin2(x)
+
+
