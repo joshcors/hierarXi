@@ -9,7 +9,7 @@ DEFAULT_KMEANS_KWARGS = {
     "tol": 0.0001,
     "verbose": 0,
     "random_state": None,
-    "copy_x": True,
+    "copy_x": False,
     "algorithm": "lloyd"
 }
 
@@ -37,7 +37,7 @@ class HAPT(KMeans):
 
         self.branches:list[HAPT] = None if self.is_leaf else [None for i in range(self.n_clusters)]
 
-        super().__init__(n_clusters, **DEFAULT_KMEANS_KWARGS)
+        super().__init__(n_clusters=n_clusters, **DEFAULT_KMEANS_KWARGS)
 
     def cluster_fit(self):
         """
@@ -79,7 +79,7 @@ class HAPT(KMeans):
 
         # Get properly-sized projection
         #   Note: this may result in nodes with lower-dimension vectors
-        q = min(sizes[0], *points_use.shape)
+        q = min(sizes[0], points_use.shape[1], points_use.shape[0] - 1)
         _, _, V = pca_lowrank(torch.tensor(points_use), q=q)
 
         self.projection = V.numpy()
