@@ -1,3 +1,6 @@
 /arxiv_kaggle
 .env
 __pycache__/
+
+data/*
+!data/get_arxiv.py

@@ -1,6 +1,7 @@
 import os
 import torch
 import numpy as np
+from pathlib import Path
 from torch import pca_lowrank
 from sklearn.cluster import KMeans
 
@@ -46,6 +47,7 @@ class HAPT(KMeans):
         if self.points is not None:
             self.start_idx = 0
             self.end_idx = len(self.points)
+            self.centroid = self.points.mean(axis=0)
 
         self.cumulated_projection:np.ndarray = None
         self.projection:np.ndarray           = None
@@ -126,7 +128,7 @@ class HAPT(KMeans):
         if q < 1:
             self.projection = np.eye(Din, dtype=np.float32)
         else:
-            _, _, V = pca_lowrank(torch.from_numpy(points_use).half(), q=q)
+            _, _, V = pca_lowrank(torch.from_numpy(points_use), q=q)
             self.projection = V.numpy()
 
         # Accumulate projections
@@ -152,13 +154,17 @@ class HAPT(KMeans):
             print("Please provide a directory")
             return
         
-
+        if not self.is_leaf:
+            Path(base_dir).mkdir(parents=True, exist_ok=True)
         # Save
         if self.is_leaf:
             np.save(os.path.join(base_dir, "points.npy"), self.get_projected_points())
         try:
             np.save(os.path.join(base_dir, "centroid.npy"), self.get_projected_centroid())
         except AttributeError:
+            return
+        
+        if self.is_leaf:
             return
 
         # Recurse
@@ -179,6 +185,9 @@ class HAPT(KMeans):
         except AttributeError:
             return 
         
+        if self.is_leaf:
+            return
+
         # Recurse
         for i in range(self.n_clusters):
             data[i] = {}
