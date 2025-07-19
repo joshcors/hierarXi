@@ -1,10 +1,10 @@
-import requests, sys, time, json, xml.etree.ElementTree as ET
-from sentence_transformers import SentenceTransformer
-import jsonlines
-import numpy as np
 import os
 import re
 import tqdm
+import jsonlines
+import numpy as np
+from sentence_transformers import SentenceTransformer
+import requests, sys, time, json, xml.etree.ElementTree as ET
 
 file_dir = os.path.dirname(os.path.realpath(__file__))
 arxiv_dir = os.path.join(file_dir, "arxiv", "batches")
