@@ -210,7 +210,8 @@ class HAPT(KMeans):
         # Get and validate batches
         files = os.listdir(batch_dir)
         files = list(filter(lambda x : re.match(pattern, x), files))
-        max_batch = max([int(re.match(pattern, f)[1]) for f in files])
+        files = sorted(files, key=lambda x : int(re.match(pattern, x)[1]))
+        max_batch = int(re.match(pattern, files[-1])[1])
 
         if len(files) == 0:
             raise ValueError(f"No batches found in {batch_dir}")
