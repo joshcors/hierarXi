@@ -1,4 +1,5 @@
 import os
+import re
 import torch
 import numpy as np
 from pathlib import Path
@@ -23,7 +24,7 @@ class HAPT(KMeans):
 
     Hierarchical K-means tree, with a unique PCA projection on each graph edge
     """
-    def __init__(self, n_clusters, is_leaf, parent=None, points=None, base_dir=None, root=None, start_idx=None, end_idx=None, centroid=None):
+    def __init__(self, n_clusters, is_leaf, parent=None, points=None, root=None, start_idx=None, end_idx=None, centroid=None):
         """
         n_clusters  : k
         is_leaf     : denotes if tree is leaf node
@@ -37,7 +38,6 @@ class HAPT(KMeans):
         self.is_leaf:bool        = is_leaf
         self.parent:HAPT         = parent
         self.n_clusters:int      = n_clusters
-        self.base_dir:str        = base_dir
         self.centroid            = centroid
         self.points:np.ndarray   = points
 
@@ -45,6 +45,7 @@ class HAPT(KMeans):
         self.end_idx = end_idx
 
         if self.points is not None:
+            self.make_points_info()
             self.start_idx = 0
             self.end_idx = len(self.points)
             self.centroid = self.points.mean(axis=0)
@@ -55,6 +56,11 @@ class HAPT(KMeans):
         self.branches:list[HAPT] = None if self.is_leaf else [None for i in range(self.n_clusters)]
 
         super().__init__(n_clusters=n_clusters, **DEFAULT_KMEANS_KWARGS)
+
+    def make_points_info(self):
+        self.start_idx = 0
+        self.end_idx   = len(self.points)
+        self.centroid  = self.points.mean(axis=0)
 
     def get_points(self):
         """Get points from root based on limit `idx`s"""
@@ -144,15 +150,8 @@ class HAPT(KMeans):
         for i in range(self.n_clusters):
             self.branches[i].get_projections(sizes[1:])
 
-    def save_vectors(self, base_dir=None):
+    def save_vectors(self, base_dir):
         """Save projected points and centroid to individual `.npy` files"""
-
-        # Check for base_dir somewhere
-        if base_dir is None:
-            base_dir = self.base_dir
-        if base_dir is None:
-            print("Please provide a directory")
-            return
         
         if not self.is_leaf:
             Path(base_dir).mkdir(parents=True, exist_ok=True)
@@ -161,6 +160,7 @@ class HAPT(KMeans):
             np.save(os.path.join(base_dir, "points.npy"), self.get_projected_points())
         try:
             np.save(os.path.join(base_dir, "centroid.npy"), self.get_projected_centroid())
+            np.save(os.path.join(base_dir, "projection.npy"), self.projection)
         except AttributeError:
             return
         
@@ -182,6 +182,7 @@ class HAPT(KMeans):
             data["points"] = self.get_projected_points()
         try:
             data["centroid"] = self.get_projected_centroid()
+            data["projection"] = self.projection
         except AttributeError:
             return 
         
@@ -195,6 +196,43 @@ class HAPT(KMeans):
 
         if self.parent is None:
             np.savez_compressed(file_path, data=data, allow_pickle=True)
+
+    def load_batches(self, batch_dir):
+        """
+        Load batches from batch directory, which is a directory full of `batch_<n>.npy` files
+        """
+        pattern = "batch_([0-9]+)\.npy"
+
+        # Ensure provided path
+        if not os.path.exists(batch_dir):
+            raise ValueError(f"Batch directory ({batch_dir}) does not exist")
+        
+        # Get and validate batches
+        files = os.listdir(batch_dir)
+        files = list(filter(lambda x : re.match(pattern, x), files))
+        max_batch = max([int(re.match(pattern, f)[1]) for f in files])
+
+        if len(files) == 0:
+            raise ValueError(f"No batches found in {batch_dir}")
+        if len(files) != (max_batch + 1):
+            print(f"WARNING: You may be missing batches)")
+
+        full_paths = [os.path.join(batch_dir, file) for file in files]
+
+        self.points = np.load(full_paths[0])
+
+        for i in range(1, len(full_paths)):
+            path = full_paths[i]
+            
+            try:
+                self.points = np.concat((self.points, np.load(path)), axis=0)
+            except ValueError as e:
+                if e.args[0].startswith("all the input array dimensions except for the concatenation axis must match exactly"):
+                    raise ValueError("All batches must have same dimension")
+
+        self.make_points_info()
+        
+
 
 class HAPTPredictor(nn.Module):
     def __init__(self, input_dim, output_dim, *args, **kwargs):

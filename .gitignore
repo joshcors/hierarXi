@@ -4,3 +4,4 @@ __pycache__/
 
 data/*
 !data/get_arxiv.py
+!data/get_base_embeddings.py
