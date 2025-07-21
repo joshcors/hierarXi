@@ -1,0 +1,6 @@
+tqdm
+numpy
+torch
+jsonlines
+scikit-learn
+sentence-transformers

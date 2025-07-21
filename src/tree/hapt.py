@@ -1,12 +1,17 @@
 import os
 import re
+import tqdm
 import torch
 import numpy as np
+import torch.nn as nn
+from uuid import uuid4
 from pathlib import Path
 from torch import pca_lowrank
 from sklearn.cluster import KMeans
+from tree.payload_manager import PayloadManger
 
-import torch.nn as nn
+PACKAGE_DIR = Path(__file__).resolve().parent
+BASE_DATA_DIR = os.path.join(PACKAGE_DIR, "data", "store")
 
 DEFAULT_KMEANS_KWARGS = {
     "init": "k-means++",
@@ -24,7 +29,7 @@ class HAPT(KMeans):
 
     Hierarchical K-means tree, with a unique PCA projection on each graph edge
     """
-    def __init__(self, n_clusters, is_leaf, parent=None, points=None, root=None, start_idx=None, end_idx=None, centroid=None):
+    def __init__(self, n_clusters, is_leaf, parent=None, points=None, root=None, start_idx=None, end_idx=None, centroid=None, payload_manager=None):
         """
         n_clusters  : k
         is_leaf     : denotes if tree is leaf node
@@ -35,11 +40,17 @@ class HAPT(KMeans):
         if self.root is None:
             self.root = self
 
+        self.uuid = uuid4()
+        self.data_dir = os.path.join(BASE_DATA_DIR, str(self.uuid))
+        Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+
         self.is_leaf:bool        = is_leaf
         self.parent:HAPT         = parent
         self.n_clusters:int      = n_clusters
-        self.centroid            = centroid
+        self.centroid:np.ndarray = centroid
         self.points:np.ndarray   = points
+
+        self.payload_manager:PayloadManger = payload_manager
 
         self.start_idx = start_idx
         self.end_idx = end_idx
@@ -49,6 +60,7 @@ class HAPT(KMeans):
             self.start_idx = 0
             self.end_idx = len(self.points)
             self.centroid = self.points.mean(axis=0)
+            self.order = np.arange(len(self.points))
 
         self.cumulated_projection:np.ndarray = None
         self.projection:np.ndarray           = None
@@ -61,10 +73,17 @@ class HAPT(KMeans):
         self.start_idx = 0
         self.end_idx   = len(self.points)
         self.centroid  = self.points.mean(axis=0)
+        self.order = np.arange(len(self.points))
+
+    def get_payload(self, index):
+        sort_index = self.root.order[index]
+        payload = self.payload_manager.get_payload(sort_index)
+        return payload
 
     def get_points(self):
         """Get points from root based on limit `idx`s"""
-        return self.root.points[self.start_idx:self.end_idx]
+        indices = self.root.order[self.start_idx:self.end_idx]
+        return self.root.points[indices]
     
     def get_projected_points(self):
         """Get points projected into cluster's subspace"""
@@ -76,7 +95,7 @@ class HAPT(KMeans):
     
     def sort_points(self, start, end, order):
         """Sort portion of `root`'s points (from `start` to `end`), in `order`"""
-        self.root.points[start:end] = self.root.points[start:end][order]
+        self.root.order[start:end] = self.root.order[start:end][order]
         
     def cluster_fit(self):
         """
@@ -197,7 +216,7 @@ class HAPT(KMeans):
         if self.parent is None:
             np.savez_compressed(file_path, data=data, allow_pickle=True)
 
-    def load_batches(self, batch_dir):
+    def load_batches(self, batch_dir, batch_size=1000, dim=1024):
         """
         Load batches from batch directory, which is a directory full of `batch_<n>.npy` files
         """
@@ -220,17 +239,22 @@ class HAPT(KMeans):
 
         full_paths = [os.path.join(batch_dir, file) for file in files]
 
-        self.points = np.load(full_paths[0])
+        N = len(full_paths) * batch_size
 
-        for i in range(1, len(full_paths)):
-            path = full_paths[i]
-            
-            try:
-                self.points = np.concat((self.points, np.load(path)), axis=0)
-            except ValueError as e:
-                if e.args[0].startswith("all the input array dimensions except for the concatenation axis must match exactly"):
-                    raise ValueError("All batches must have same dimension")
+        points_path = os.path.join(self.data_dir, "points.npy")
+        points_memmap = np.memmap(points_path, mode="w+", dtype=np.float16, shape=(N, dim))
 
+        cursor = 0
+        for path in tqdm.tqdm(full_paths):
+
+            batch = np.load(path, mmap_mode="r")
+            n = batch.shape[0]
+            points_memmap[cursor:cursor+n] = batch
+            cursor += n
+
+        points_memmap.flush()
+
+        self.points = np.memmap(points_path, mode="r", dtype=np.float16, shape=(N,dim))[:cursor]
         self.make_points_info()
         
 
