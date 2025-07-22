@@ -7,7 +7,7 @@ import torch.nn as nn
 from uuid import uuid4
 from pathlib import Path
 from torch import pca_lowrank
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, MiniBatchKMeans
 from tree.payload_manager import PayloadManger
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -23,7 +23,7 @@ DEFAULT_KMEANS_KWARGS = {
     "algorithm": "lloyd"
 }
 
-class HAPT(KMeans):
+class HAPT:#(KMeans):
     """
     Hierarchical Adaptive-Projection Tree (HAPT)
 
@@ -43,6 +43,13 @@ class HAPT(KMeans):
         self.uuid = uuid4()
         self.data_dir = os.path.join(BASE_DATA_DIR, str(self.uuid))
         Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+
+        self.mbk = MiniBatchKMeans(n_clusters=n_clusters,
+                                   batch_size=10_000,
+                                   max_iter=10,
+                                   compute_labels=True,
+                                   reassignment_ratio=0,
+                                   random_state=0)
 
         self.is_leaf:bool        = is_leaf
         self.parent:HAPT         = parent
@@ -93,9 +100,22 @@ class HAPT(KMeans):
         """Get cluster centroid projected into cluster's subspace"""
         return self.centroid @ self.cumulated_projection
     
-    def sort_points(self, start, end, order):
+    def sort_points(self, start, end, order, batch_size=None):
         """Sort portion of `root`'s points (from `start` to `end`), in `order`"""
-        self.root.order[start:end] = self.root.order[start:end][order]
+        visited = np.zeros(len(order), dtype=bool)
+        buff = np.empty(self.root.points.shape[1], dtype=self.root.points.dtype)
+        for start_ind in range(start, end):
+            if visited[start_ind] or order[start_ind] == start_ind:
+                continue
+            i = start_ind
+            buff = self.root.points[i]
+            while True:
+                visited[i - start] = True
+                j = order[i - start]
+                if j == start_ind:
+                    self.root.points[i] = buff
+                self.root.points[i] = self.root.points[j]
+                i = j
         
     def cluster_fit(self):
         """
@@ -103,7 +123,7 @@ class HAPT(KMeans):
         """
         
         # Get K-means labels
-        labels = self.fit_predict(self.get_points())
+        labels = self.mbk.fit_predict(self.get_points())
 
         # Sort points by clusters
         sort_idx = np.argsort(labels)

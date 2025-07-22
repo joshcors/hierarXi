@@ -7,3 +7,4 @@ data/*
 !data/store/
 data/store/*
 *.egg-info
+*data/store/*
