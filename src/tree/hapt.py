@@ -1,16 +1,19 @@
 import os
 import re
+import json
 import tqdm
 import torch
 import numpy as np
 import torch.nn as nn
 from uuid import uuid4
 from pathlib import Path
+from hashlib import sha256
 from torch import pca_lowrank
-from sklearn.cluster import KMeans, MiniBatchKMeans
+from utils import find_project_root
+from sklearn.cluster import MiniBatchKMeans
 from tree.payload_manager import PayloadManger
 
-PACKAGE_DIR = Path(__file__).resolve().parent
+PACKAGE_DIR = find_project_root()
 BASE_DATA_DIR = os.path.join(PACKAGE_DIR, "data", "store")
 
 DEFAULT_KMEANS_KWARGS = {
@@ -40,9 +43,8 @@ class HAPT:#(KMeans):
         if self.root is None:
             self.root = self
 
-        self.uuid = uuid4()
-        self.data_dir = os.path.join(BASE_DATA_DIR, str(self.uuid))
-        Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+        self.id = uuid4()
+        self.data_dir = self.get_data_dir()
 
         self.mbk = MiniBatchKMeans(n_clusters=n_clusters,
                                    batch_size=10_000,
@@ -74,7 +76,8 @@ class HAPT:#(KMeans):
 
         self.branches:list[HAPT] = None if self.is_leaf else [None for i in range(self.n_clusters)]
 
-        super().__init__(n_clusters=n_clusters, **DEFAULT_KMEANS_KWARGS)
+    def get_data_dir(self):
+        return os.path.join(BASE_DATA_DIR, str(self.id))
 
     def make_points_info(self):
         self.start_idx = 0
@@ -89,8 +92,7 @@ class HAPT:#(KMeans):
 
     def get_points(self):
         """Get points from root based on limit `idx`s"""
-        indices = self.root.order[self.start_idx:self.end_idx]
-        return self.root.points[indices]
+        return self.root.points[self.start_idx:self.end_idx]
     
     def get_projected_points(self):
         """Get points projected into cluster's subspace"""
@@ -100,21 +102,38 @@ class HAPT:#(KMeans):
         """Get cluster centroid projected into cluster's subspace"""
         return self.centroid @ self.cumulated_projection
     
-    def sort_points(self, start, end, order, batch_size=None):
-        """Sort portion of `root`'s points (from `start` to `end`), in `order`"""
+    def sort_points(self, start, end, order):
+        """Sort portion of `root`'s points (from `start` to `end`), in `order`
+        
+        Cyclic reordering to limit to-mem
+        """
         visited = np.zeros(len(order), dtype=bool)
         buff = np.empty(self.root.points.shape[1], dtype=self.root.points.dtype)
-        for start_ind in range(start, end):
-            if visited[start_ind] or order[start_ind] == start_ind:
+        for start_ind in tqdm.tqdm(range(start, end)):
+            if visited[start_ind - start] or order[start_ind - start] == start_ind:
                 continue
             i = start_ind
-            buff = self.root.points[i]
+
+            buff = self.root.points[i].copy()
+            buff_ind = self.order[i]
+
             while True:
                 visited[i - start] = True
+
+                # Get next "from"
                 j = order[i - start]
+
+                # Cycle closed, use buffer
                 if j == start_ind:
                     self.root.points[i] = buff
+                    self.order[i] = buff_ind
+                    break
+
+                # Transfer "from" to "to"
                 self.root.points[i] = self.root.points[j]
+                self.order[i] = self.order[j]
+
+                # Set next "to"
                 i = j
         
     def cluster_fit(self):
@@ -259,22 +278,38 @@ class HAPT:#(KMeans):
 
         full_paths = [os.path.join(batch_dir, file) for file in files]
 
+        self.id = sha256("".join(full_paths).encode("utf-8")).hexdigest()
+        self.data_dir = self.get_data_dir()
+        Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+
         N = len(full_paths) * batch_size
 
         points_path = os.path.join(self.data_dir, "points.npy")
-        points_memmap = np.memmap(points_path, mode="w+", dtype=np.float16, shape=(N, dim))
+        info_path = os.path.join(self.data_dir, "info.json")
 
-        cursor = 0
-        for path in tqdm.tqdm(full_paths):
+        if not Path(points_path).exists() or not Path(info_path).exists():
+            points_memmap = np.memmap(points_path, mode="w+", dtype=np.float16, shape=(N, dim))
 
-            batch = np.load(path, mmap_mode="r")
-            n = batch.shape[0]
-            points_memmap[cursor:cursor+n] = batch
-            cursor += n
+            cursor = 0
+            for path in tqdm.tqdm(full_paths):
 
-        points_memmap.flush()
+                batch = np.load(path, mmap_mode="r")
+                n = batch.shape[0]
+                points_memmap[cursor:cursor+n] = batch
+                cursor += n
 
-        self.points = np.memmap(points_path, mode="r", dtype=np.float16, shape=(N,dim))[:cursor]
+            points_memmap.flush()
+
+            with open(info_path, "w") as f:
+                json.dump({"cursor": cursor}, f)
+
+        # Recover cursor
+        if Path(info_path).exists():
+            with open(info_path, "r") as f:
+                info = json.load(f)
+            cursor = info["cursor"]
+
+        self.points = np.memmap(points_path, mode="r+", dtype=np.float16, shape=(N,dim))[:cursor]
         self.make_points_info()
         
 
