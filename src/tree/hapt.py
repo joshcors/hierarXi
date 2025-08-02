@@ -11,6 +11,8 @@ from hashlib import sha256
 from torch import pca_lowrank
 from utils import find_project_root
 from sklearn.cluster import MiniBatchKMeans
+
+from utils import PointsManager
 from tree.payload_manager import PayloadManger
 
 PACKAGE_DIR = find_project_root()
@@ -81,9 +83,11 @@ class HAPT:#(KMeans):
 
     def make_points_info(self):
         self.start_idx = 0
-        self.end_idx   = len(self.points)
-        self.centroid  = self.points.mean(axis=0)
-        self.order = np.arange(len(self.points))
+        self.end_idx   = self.points_manager.shape[0]
+
+        # Root is going to be diverse and large (0 vector good enough)
+        self.centroid  = np.zeros(self.points_manager.shape[0], dtype=self.points_manager.dtype)
+        self.order = np.arange(len(self.points_manager))
 
     def get_payload(self, index):
         sort_index = self.root.order[index]
@@ -92,7 +96,7 @@ class HAPT:#(KMeans):
 
     def get_points(self):
         """Get points from root based on limit `idx`s"""
-        return self.root.points[self.start_idx:self.end_idx]
+        return self.root.points_manager.get_points(self.start_idx, self.end_idx)
     
     def get_projected_points(self):
         """Get points projected into cluster's subspace"""
@@ -107,6 +111,8 @@ class HAPT:#(KMeans):
         
         Cyclic reordering to limit to-mem
         """
+        self.points_manager.reorder(start, end, order)
+        return 
         visited = np.zeros(len(order), dtype=bool)
         buff = np.empty(self.root.points.shape[1], dtype=self.root.points.dtype)
         for start_ind in tqdm.tqdm(range(start, end)):
@@ -136,31 +142,36 @@ class HAPT:#(KMeans):
                 # Set next "to"
                 i = j
         
-    def cluster_fit(self):
+    def cluster_fit(self, **kwargs):
         """
         Fit k-means cluster on points, extract clusters
         """
         
         # Get K-means labels
+        if kwargs.get("verbose", False): print("Clustering")
         labels = self.mbk.fit_predict(self.get_points())
 
         # Sort points by clusters
         sort_idx = np.argsort(labels)
         counts = np.bincount(labels, minlength=self.n_clusters)
         cutoffs = np.concat(([0, ], np.cumsum(counts))) + self.start_idx
-        self.root.sort_points(self.start_idx, self.end_idx, sort_idx)
 
         # Get cutoff indices (points[start:end]) for each cluster
         idx = [(cutoffs[j], cutoffs[j + 1]) for j in range(self.n_clusters)]
+
+        if kwargs.get("verbose", False): print("Sorting")
+        self.root.sort_points(self.start_idx, self.end_idx, sort_idx + self.start_idx)
         
         return idx
     
-    def branch(self, depth_remaining):
+    def branch(self, depth_remaining, **kwargs):
         """
         Recursively generate clusters
         """
-        idx = self.cluster_fit()
-        centroids = self.cluster_centers_
+        if kwargs.get("verbose", False): print(f"Branch {depth_remaining - 1} from leaf")
+
+        idx = self.cluster_fit(**kwargs)
+        centroids = self.mbk.cluster_centers_
 
         is_leaf = (depth_remaining == 1)
 
@@ -168,11 +179,12 @@ class HAPT:#(KMeans):
             start, end = idx[i]
             if start == end: continue
 
+            if kwargs.get("verbose", False): print(f"Creating branch {i}")
             self.branches[i] = HAPT(self.n_clusters, is_leaf, parent=self, root=self.root, start_idx=start, end_idx=end, centroid=centroids[i])
 
             # Recurse non-leaves
             if not is_leaf:
-                self.branches[i].branch(depth_remaining - 1)
+                self.branches[i].branch(depth_remaining - 1, **kwargs)
 
     def get_projections(self, sizes):
         """
@@ -277,6 +289,7 @@ class HAPT:#(KMeans):
             print(f"WARNING: You may be missing batches)")
 
         full_paths = [os.path.join(batch_dir, file) for file in files]
+        full_paths = [os.path.abspath(path) for path in full_paths]
 
         self.id = sha256("".join(full_paths).encode("utf-8")).hexdigest()
         self.data_dir = self.get_data_dir()
@@ -309,7 +322,7 @@ class HAPT:#(KMeans):
                 info = json.load(f)
             cursor = info["cursor"]
 
-        self.points = np.memmap(points_path, mode="r+", dtype=np.float16, shape=(N,dim))[:cursor]
+        self.points_manager = PointsManager(points_path, (cursor,dim), dtype=np.float16)
         self.make_points_info()
         
 

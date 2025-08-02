@@ -1,6 +1,7 @@
 /arxiv_kaggle
 .env
 __pycache__/
+build/
 
 data/*
 !data/*.py
@@ -8,3 +9,5 @@ data/*
 data/store/*
 *.egg-info
 *data/store/*
+*.so
+*.c
