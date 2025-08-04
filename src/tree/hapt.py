@@ -28,7 +28,7 @@ DEFAULT_KMEANS_KWARGS = {
     "algorithm": "lloyd"
 }
 
-class HAPT:#(KMeans):
+class HAPT:
     """
     Hierarchical Adaptive-Projection Tree (HAPT)
 
@@ -80,6 +80,15 @@ class HAPT:#(KMeans):
 
     def get_data_dir(self):
         return os.path.join(BASE_DATA_DIR, str(self.id))
+    
+    def get_points_path(self):
+        return os.path.join(self.get_data_dir(), "points.npy")
+    
+    def get_order_path(self):
+        return os.path.join(self.get_data_dir(), "order.dat")
+    
+    def get_info_path(self):
+        return os.path.join(self.get_data_dir(), "info.json")
 
     def make_points_info(self):
         self.start_idx = 0
@@ -111,36 +120,31 @@ class HAPT:#(KMeans):
         
         Cyclic reordering to limit to-mem
         """
-        self.points_manager.reorder(start, end, order)
-        return 
-        visited = np.zeros(len(order), dtype=bool)
-        buff = np.empty(self.root.points.shape[1], dtype=self.root.points.dtype)
-        for start_ind in tqdm.tqdm(range(start, end)):
-            if visited[start_ind - start] or order[start_ind - start] == start_ind:
-                continue
-            i = start_ind
+        order_map = np.memmap(self.get_order_path(), mode="r+", shape=(self.root.points_manager.shape[0], ), dtype=np.int32)
+        order_map[start:end] = order_map[order]
+        order_map.flush()
+        del order_map
 
-            buff = self.root.points[i].copy()
-            buff_ind = self.order[i]
+        self.root.points_manager.reorder(start, end, order)
 
-            while True:
-                visited[i - start] = True
+    def get_best_leaf(self, vec):
+        """
+        Naive best vectors retrieval
+        """
+        if self.is_leaf:
+            return self
+        
+        best = -1
+        best_score = -np.inf
 
-                # Get next "from"
-                j = order[i - start]
+        for i, branch in enumerate(self.branches):
+            score = branch.centroid.dot(vec)
 
-                # Cycle closed, use buffer
-                if j == start_ind:
-                    self.root.points[i] = buff
-                    self.order[i] = buff_ind
-                    break
+            if score > best_score:
+                best_score = score
+                best = i
 
-                # Transfer "from" to "to"
-                self.root.points[i] = self.root.points[j]
-                self.order[i] = self.order[j]
-
-                # Set next "to"
-                i = j
+        return self.branches[best].get_best_leaf(vec)
         
     def cluster_fit(self, **kwargs):
         """
@@ -297,8 +301,8 @@ class HAPT:#(KMeans):
 
         N = len(full_paths) * batch_size
 
-        points_path = os.path.join(self.data_dir, "points.npy")
-        info_path = os.path.join(self.data_dir, "info.json")
+        points_path = self.get_points_path()
+        info_path = self.get_info_path()
 
         if not Path(points_path).exists() or not Path(info_path).exists():
             points_memmap = np.memmap(points_path, mode="w+", dtype=np.float16, shape=(N, dim))
@@ -322,8 +326,17 @@ class HAPT:#(KMeans):
                 info = json.load(f)
             cursor = info["cursor"]
 
+        order_path = self.get_order_path()
+        if not Path(order_path).exists():
+            order = np.arange(cursor).astype(np.int32)
+            order_memmap = np.memmap(order_path, mode="w+", shape=(cursor, ), dtype=np.int32)
+            order_memmap[:] = order
+            order_memmap.flush()
+            del order_memmap
+
         self.points_manager = PointsManager(points_path, (cursor,dim), dtype=np.float16)
         self.make_points_info()
+        self.payload_manager.load_info_and_order(self.data_dir)
         
 
 

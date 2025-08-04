@@ -1,5 +1,6 @@
 
 import os
+import json
 import numpy as np
 
 class PayloadManger:
@@ -14,11 +15,29 @@ class PayloadManger:
         self.index_files = {
             field : np.fromfile(os.path.join(payload_dir, f"{_id}_{field}.idx"), dtype=np.uint64) for field in self.fields
         }
+        self.data_path = None
+        self.order_path = None
+        self.info_path = None
+        self.info = None
+        self.order = None
+
+    def load_info_and_order(self, data_dir):
+        self.data_path = data_dir
+        self.order_path = os.path.join(data_dir, "order.dat")
+        self.info_path = os.path.join(data_dir, "info.json")
+        
+        with open(self.info_path, "r") as f:
+            self.info = json.load(f)
+
+        self.order = np.memmap(self.order_path, mode="readonly", shape=(self.info["cursor"], ), dtype=np.int32)
 
     def get_payload(self, index):
         """
         Get payload data at `index`
         """
+        if self.order is not None:
+            index = self.order[index]
+
         payload = {}
         for field in self.fields:
             start = self.index_files[field][index]
